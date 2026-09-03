@@ -58,6 +58,13 @@ OpenVPN Access Server inspection remains off until `ENABLE_OPENVPN_AS=1` is set.
 
 `f2bctl` reads the active recidive jail's `maxretry`, `findtime`, and `bantime` values directly from Fail2Ban. It does not impose its own escalation policy. A conservative example is included in [`examples/recidive.local`](examples/recidive.local); review it against your requirements before use.
 
+## Screenshots:
+<img width="735" height="482" alt="image" src="https://github.com/user-attachments/assets/57b714bf-29b4-405f-9bfd-ad80170f6079" />
+<img width="528" height="607" alt="image" src="https://github.com/user-attachments/assets/4522ad36-d871-43eb-be35-d0aeaa6aaa5e" />
+<img width="937" height="1023" alt="image" src="https://github.com/user-attachments/assets/fe8a5502-74cb-4a04-a516-d5fbacc342ba" />
+<img width="653" height="368" alt="image" src="https://github.com/user-attachments/assets/6ee00691-b5a9-439e-9d45-03b7d0c8eebc" />
+
+
 ## Security notes
 
 - `f2bctl` is an administrative interface and should only be run by trusted operators.
