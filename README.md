@@ -117,7 +117,25 @@ bash f2b --check
 
 The dependency check distinguishes required commands from optional DNS and WHOIS tools. It does not install anything.
 
-### 3. Install the command
+### 3. Choose how you want to run `f2bctl`
+
+You can use `f2bctl` in either of these two ways:
+
+#### Option A: Run directly from the repository (no installation)
+
+From inside the cloned `f2bctl` directory, run:
+
+```bash
+sudo bash f2b
+```
+
+This starts the dashboard immediately without copying files to `/usr/local/bin`.
+
+#### Option B: Install a system-wide `f2b` command
+
+If you prefer running `f2b` from anywhere, continue with the install step below.
+
+### 4. Install the command
 
 From inside the cloned `f2bctl` directory, run:
 
@@ -133,7 +151,7 @@ This single command does three things:
 
 It does **not** start a background service, modify Fail2Ban, create firewall rules, or enable any jail.
 
-### 4. Verify the installation
+### 5. Verify the installation
 
 Confirm that the command is available:
 
@@ -149,13 +167,16 @@ Expected location:
 /usr/local/bin/f2b
 ```
 
-### 5. Start the dashboard
+### 6. Start the dashboard
 
-Launch it with:
+Launch it with one of these commands:
 
 ```bash
 sudo f2b
+sudo bash /path/to/f2bctl/f2b
 ```
+
+Use `sudo f2b` if you installed it to `/usr/local/bin`, or `sudo bash /path/to/f2bctl/f2b` if you are running it directly from the repository.
 
 The Fail2Ban control socket and logs are normally restricted to root. If you run `f2b` without `sudo`, the script attempts to restart itself through `sudo`.
 
@@ -272,6 +293,12 @@ ls -l /usr/local/bin/f2b
 ```
 
 If it is missing, return to the cloned repository directory and repeat the installation command.
+
+If you do not want to install the command, run the script directly instead:
+
+```bash
+sudo bash /path/to/f2bctl/f2b
+```
 
 ### `fail2ban-client` is missing
 
