@@ -17,6 +17,18 @@ OpenVPN Access Server support is optional and disabled by default. The project d
 - Text incident reports with a reminder to review before sharing
 - Optional, configurable OpenVPN Access Server log inspection
 
+## Screenshots
+
+All screenshots use reserved documentation addresses and simulated data.
+
+| Dashboard | Active bans |
+| --- | --- |
+| ![f2bctl dashboard](screenshots/dashboard.png) | ![Active bans and remaining time](screenshots/active-bans.png) |
+
+| Recidive status | IP investigation |
+| --- | --- |
+| ![Recidive jail status](screenshots/recidive-status.png) | ![IP investigation](screenshots/ip-investigation.png) |
+
 ## Requirements
 
 - Linux with Bash 4 or newer
