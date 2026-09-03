@@ -1,0 +1,15 @@
+# Example only. OpenVPN Access Server log formats differ by version and setup.
+# Supply a compatible filter separately, verify it with fail2ban-regex, and
+# enable the jail only after testing. This example is disabled by default.
+
+[openvpnas]
+enabled  = false
+filter   = openvpnas
+logpath  = /var/log/openvpnas.log
+port     = https
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+
+# Add only addresses and networks you explicitly trust.
+# ignoreip = 127.0.0.1/8 ::1

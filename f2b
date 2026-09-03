@@ -1,0 +1,541 @@
+#!/usr/bin/env bash
+
+set -o pipefail
+
+VERSION="0.1.0"
+F2B="${F2B_CLIENT:-fail2ban-client}"
+F2B_LOG="${F2B_LOG:-/var/log/fail2ban.log}"
+ENABLE_OPENVPN_AS="${ENABLE_OPENVPN_AS:-0}"
+OVPN_LOG="${OVPN_LOG:-/var/log/openvpnas.log}"
+CONFIG_FILE="${F2BCTL_CONFIG:-/etc/f2bctl.conf}"
+
+if [[ -r "$CONFIG_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+fi
+
+usage() {
+    cat <<EOF
+f2bctl ${VERSION} - interactive Fail2Ban management dashboard
+
+Usage:
+  f2b [--help] [--version] [--check]
+
+Options:
+  -h, --help       Show this help text
+  -V, --version    Show the version
+  --check          Check required and optional dependencies
+
+Configuration may be supplied in ${CONFIG_FILE} or with environment variables:
+  F2B_CLIENT, F2B_LOG, ENABLE_OPENVPN_AS, OVPN_LOG
+
+OpenVPN Access Server inspection is disabled by default. Set
+ENABLE_OPENVPN_AS=1 only after confirming the log path and access policy.
+EOF
+}
+
+dependency_check() {
+    local failed=0 command_name status
+
+    printf '%-20s %s\n' "COMMAND" "STATUS"
+    printf '%-20s %s\n' "--------------------" "----------"
+    for command_name in "$F2B" python3 grep sed awk sort uniq tail date; do
+        if command -v "$command_name" >/dev/null 2>&1; then
+            status="available"
+        else
+            status="missing"
+            failed=1
+        fi
+        printf '%-20s %s\n' "$command_name" "$status"
+    done
+
+    echo
+    echo "Optional enrichment tools:"
+    for command_name in dig nslookup whois; do
+        if command -v "$command_name" >/dev/null 2>&1; then
+            status="available"
+        else
+            status="not installed"
+        fi
+        printf '  %-18s %s\n' "$command_name" "$status"
+    done
+
+    return "$failed"
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    -V|--version) echo "f2bctl ${VERSION}"; exit 0 ;;
+    --check) dependency_check; exit $? ;;
+    "") ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+if ! command -v "$F2B" >/dev/null 2>&1; then
+    echo "Error: ${F2B} was not found. Install and configure Fail2Ban first." >&2
+    exit 1
+fi
+
+# The Fail2Ban control socket is normally restricted to root. Re-run through
+# sudo without installing packages or changing configuration.
+if [[ $EUID -ne 0 ]]; then
+    exec sudo -- "$0" "$@"
+fi
+
+header() {
+    clear
+    echo "============================================================"
+    echo "                     f2bctl ${VERSION}"
+    echo "              Fail2Ban Management Dashboard"
+    echo "============================================================"
+    echo
+}
+
+pause() {
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+get_jails() {
+    "$F2B" status 2>/dev/null |
+        sed -n 's/.*Jail list:[[:space:]]*//p' |
+        tr ',' '\n' |
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' |
+        sed '/^$/d'
+}
+
+jail_exists() {
+    get_jails | grep -Fxq -- "$1"
+}
+
+validate_ip() {
+    python3 - "$1" <<'PY'
+import ipaddress
+import sys
+
+try:
+    ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+PY
+}
+
+format_seconds() {
+    local seconds="${1:-0}"
+
+    if [[ "$seconds" == "-1" ]]; then
+        echo "Permanent"
+        return
+    fi
+    if [[ ! "$seconds" =~ ^[0-9]+$ ]]; then
+        echo "Unknown"
+        return
+    fi
+
+    printf '%dd %02dh %02dm %02ds\n' \
+        "$((seconds / 86400))" \
+        "$(((seconds % 86400) / 3600))" \
+        "$(((seconds % 3600) / 60))" \
+        "$((seconds % 60))"
+}
+
+jail_has_ip() {
+    local jail="$1" ip="$2"
+    "$F2B" status "$jail" 2>/dev/null |
+        sed -n 's/.*Banned IP list:[[:space:]]*//p' |
+        tr ' ' '\n' |
+        grep -Fxq -- "$ip"
+}
+
+show_ban_timing() {
+    local jail="$1" ip="$2" bantime banline banned_at banned_epoch
+    local expiry_epoch now_epoch remaining
+
+    bantime=$("$F2B" get "$jail" bantime 2>/dev/null)
+    echo "  Jail:      $jail"
+    echo "  Bantime:   $(format_seconds "$bantime")"
+
+    if [[ "$bantime" == "-1" ]]; then
+        echo "  Expiry:    Permanent"
+        return
+    fi
+
+    banline=$(grep -F "[$jail] Ban $ip" "$F2B_LOG" 2>/dev/null | tail -1)
+    if [[ -z "$banline" ]]; then
+        echo "  Banned at: unavailable in the current log"
+        return
+    fi
+
+    banned_at="${banline:0:19}"
+    banned_epoch=$(date -d "$banned_at" +%s 2>/dev/null) || true
+    if [[ -z "$banned_epoch" || ! "$bantime" =~ ^[0-9]+$ ]]; then
+        echo "  Banned at: $banned_at"
+        return
+    fi
+
+    expiry_epoch=$((banned_epoch + bantime))
+    now_epoch=$(date +%s)
+    remaining=$((expiry_epoch - now_epoch))
+    (( remaining < 0 )) && remaining=0
+
+    echo "  Banned at: $banned_at"
+    echo "  Expires:   $(date -d "@$expiry_epoch" '+%Y-%m-%d %H:%M:%S')"
+    echo "  Remaining: $(format_seconds "$remaining")"
+}
+
+dashboard() {
+    local jail bantime
+    header
+    echo "System time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo
+    echo "Active jails:"
+    echo
+
+    while IFS= read -r jail; do
+        echo "[$jail]"
+        "$F2B" status "$jail" 2>/dev/null |
+            grep -E 'Currently failed|Total failed|Currently banned|Total banned|Banned IP list'
+        bantime=$("$F2B" get "$jail" bantime 2>/dev/null)
+        echo "  Bantime: $(format_seconds "$bantime")"
+        echo
+    done < <(get_jails)
+    pause
+}
+
+active_bans() {
+    local jail ips ip
+    header
+    echo "Currently banned IP addresses"
+    echo
+
+    while IFS= read -r jail; do
+        echo "[$jail]"
+        ips=$("$F2B" status "$jail" 2>/dev/null |
+            sed -n 's/.*Banned IP list:[[:space:]]*//p')
+        if [[ -z "$ips" ]]; then
+            echo "  None"
+        else
+            for ip in $ips; do
+                echo
+                echo "  $ip"
+                show_ban_timing "$jail" "$ip"
+            done
+        fi
+        echo
+    done < <(get_jails)
+    pause
+}
+
+recent_events() {
+    local event="$1"
+    header
+    echo "Last 30 ${event,,} events"
+    echo
+    grep " $event " "$F2B_LOG" 2>/dev/null | tail -30 || true
+    pause
+}
+
+repeat_offenders() {
+    header
+    echo "Top repeat offenders in the current Fail2Ban log"
+    echo
+    printf '%-8s %-40s\n' "BANS" "IP ADDRESS"
+    echo "------------------------------------------------"
+    grep ' Ban ' "$F2B_LOG" 2>/dev/null |
+        sed -n 's/.* Ban \([0-9a-fA-F:.]*\)$/\1/p' |
+        sort | uniq -c | sort -nr | head -30 |
+        awk '{printf "%-8s %-40s\n", $1, $2}' || true
+    pause
+}
+
+recidive_status() {
+    local retry findtime bantime
+    header
+    if ! jail_exists recidive; then
+        echo "The recidive jail is not enabled."
+        pause
+        return
+    fi
+
+    "$F2B" status recidive
+    retry=$("$F2B" get recidive maxretry 2>/dev/null)
+    findtime=$("$F2B" get recidive findtime 2>/dev/null)
+    bantime=$("$F2B" get recidive bantime 2>/dev/null)
+    echo
+    echo "Escalation policy loaded from Fail2Ban:"
+    echo "  Threshold: $retry bans"
+    echo "  Window:    $(format_seconds "$findtime")"
+    echo "  Penalty:   $(format_seconds "$bantime")"
+    pause
+}
+
+recidive_candidates() {
+    local retry findtime
+    header
+    if ! jail_exists recidive; then
+        echo "The recidive jail is not enabled."
+        pause
+        return
+    fi
+
+    retry=$("$F2B" get recidive maxretry 2>/dev/null)
+    findtime=$("$F2B" get recidive findtime 2>/dev/null)
+    echo "Repeat-offender candidates"
+    echo
+    echo "Threshold: $retry bans"
+    echo "Window:    $(format_seconds "$findtime")"
+    echo
+
+    RETRY="$retry" FINDTIME="$findtime" LOGFILE="$F2B_LOG" python3 <<'PY'
+import os
+import re
+from datetime import datetime, timedelta
+
+threshold = int(os.environ["RETRY"])
+window = int(os.environ["FINDTIME"])
+cutoff = datetime.now() - timedelta(seconds=window)
+pattern = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+.*"
+    r"\[([^\]]+)\]\s+Ban\s+([0-9a-fA-F:.]+)$"
+)
+counts = {}
+
+try:
+    with open(os.environ["LOGFILE"], errors="ignore") as log:
+        for line in log:
+            match = pattern.search(line)
+            if not match:
+                continue
+            timestamp, jail, ip = match.groups()
+            if jail == "recidive":
+                continue
+            if datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S") >= cutoff:
+                counts[ip] = counts.get(ip, 0) + 1
+except FileNotFoundError:
+    print("Fail2Ban log not found.")
+    raise SystemExit
+
+print(f"{'BANS':<8} {'IP ADDRESS':<40} STATUS")
+print("-" * 65)
+if not counts:
+    print("No ban events inside the current recidive window.")
+for ip, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+    status = "THRESHOLD REACHED" if count >= threshold else f"{threshold - count} away"
+    print(f"{count:<8} {ip:<40} {status}")
+PY
+    pause
+}
+
+show_openvpn_history() {
+    local ip="$1"
+    if [[ "$ENABLE_OPENVPN_AS" != "1" ]]; then
+        echo "  Disabled. See docs/openvpn-access-server.md."
+    elif [[ ! -r "$OVPN_LOG" ]]; then
+        echo "  Configured log is not readable: $OVPN_LOG"
+    else
+        echo "  Log entries:        $(grep -F -- "$ip" "$OVPN_LOG" 2>/dev/null | wc -l)"
+        echo "  Login API attempts: $(grep -F -- "$ip" "$OVPN_LOG" 2>/dev/null | grep -c 'POST /api/auth/login/userpassword' || true)"
+        echo "  HTTP 403 responses: $(grep -F -- "$ip" "$OVPN_LOG" 2>/dev/null | grep 'POST /api/auth/login/userpassword' | grep -c ' 403 ' || true)"
+    fi
+}
+
+investigate_ip() {
+    local ip jail found=0 total_bans first last rdns
+    header
+    read -r -p "IP address: " ip
+    if ! validate_ip "$ip"; then
+        echo "Invalid IP address."
+        pause
+        return
+    fi
+
+    header
+    echo "IP investigation: $ip"
+    echo
+    echo "[Current Fail2Ban status]"
+    while IFS= read -r jail; do
+        if jail_has_ip "$jail" "$ip"; then
+            found=1
+            show_ban_timing "$jail" "$ip"
+            echo
+        fi
+    done < <(get_jails)
+    (( found == 0 )) && echo "  Not currently banned."
+
+    echo
+    echo "[Fail2Ban history]"
+    total_bans=$(grep -F " Ban $ip" "$F2B_LOG" 2>/dev/null | wc -l)
+    first=$(grep -F -- "$ip" "$F2B_LOG" 2>/dev/null | head -1 | cut -c1-23)
+    last=$(grep -F -- "$ip" "$F2B_LOG" 2>/dev/null | tail -1 | cut -c1-23)
+    echo "  Ban events in current log: $total_bans"
+    [[ -n "$first" ]] && echo "  First event: $first"
+    [[ -n "$last" ]] && echo "  Last event:  $last"
+
+    echo
+    echo "[OpenVPN Access Server]"
+    show_openvpn_history "$ip"
+
+    echo
+    echo "[Reverse DNS]"
+    if command -v dig >/dev/null 2>&1; then
+        rdns=$(dig -x "$ip" +short | head -5)
+        [[ -n "$rdns" ]] && echo "$rdns" || echo "  No PTR record found."
+    elif command -v nslookup >/dev/null 2>&1; then
+        nslookup "$ip" 2>/dev/null | tail -10
+    else
+        echo "  dig/nslookup is not installed."
+    fi
+
+    echo
+    echo "[WHOIS / ASN]"
+    if command -v whois >/dev/null 2>&1; then
+        whois "$ip" 2>/dev/null |
+            grep -Ei '^(origin|originas|aut-num|netname|org-name|organization|org|descr|country|abuse-mailbox|orgabuseemail|e-mail|role):' |
+            head -30 || true
+    else
+        echo "  whois is not installed."
+    fi
+
+    echo
+    echo "[Recent Fail2Ban events]"
+    grep -F -- "$ip" "$F2B_LOG" 2>/dev/null | tail -15 || true
+    pause
+}
+
+change_ban() {
+    local operation="$1" jail ip verb
+    header
+    echo "Available jails:"
+    get_jails
+    echo
+    read -r -p "Jail: " jail
+    if ! jail_exists "$jail"; then
+        echo "Unknown jail."
+        pause
+        return
+    fi
+
+    verb="ban"
+    [[ "$operation" == "unbanip" ]] && verb="unban"
+    read -r -p "IP address to ${verb}: " ip
+    if ! validate_ip "$ip"; then
+        echo "Invalid IP address."
+        pause
+        return
+    fi
+
+    echo
+    read -r -p "Confirm ${verb} of ${ip} in ${jail}? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { echo "Cancelled."; pause; return; }
+    "$F2B" set "$jail" "$operation" "$ip"
+    pause
+}
+
+trusted_networks() {
+    local jail
+    header
+    echo "Fail2Ban ignored/trusted addresses"
+    echo
+    while IFS= read -r jail; do
+        echo "[$jail]"
+        "$F2B" get "$jail" ignoreip 2>/dev/null
+        echo
+    done < <(get_jails)
+    pause
+}
+
+config_health() {
+    local jail
+    header
+    "$F2B" -t
+    echo
+    "$F2B" status
+    echo
+    while IFS= read -r jail; do
+        echo "[$jail]"
+        echo "  Bantime:  $("$F2B" get "$jail" bantime 2>/dev/null)"
+        echo "  Findtime: $("$F2B" get "$jail" findtime 2>/dev/null)"
+        echo "  Maxretry: $("$F2B" get "$jail" maxretry 2>/dev/null)"
+    done < <(get_jails)
+    pause
+}
+
+export_report() {
+    local ip safe_ip report jail found=0
+    header
+    read -r -p "IP address: " ip
+    if ! validate_ip "$ip"; then
+        echo "Invalid IP address."
+        pause
+        return
+    fi
+
+    safe_ip=${ip//:/_}
+    report="${TMPDIR:-/tmp}/f2b-${safe_ip}-$(date '+%Y%m%d-%H%M%S').txt"
+    {
+        echo "f2bctl incident report"
+        echo "Generated: $(date)"
+        echo "IP: $ip"
+        echo "============================================================"
+        echo
+        echo "CURRENT BANS"
+        while IFS= read -r jail; do
+            if jail_has_ip "$jail" "$ip"; then
+                found=1
+                show_ban_timing "$jail" "$ip"
+            fi
+        done < <(get_jails)
+        (( found == 0 )) && echo "Not currently banned."
+        echo
+        echo "FAIL2BAN HISTORY"
+        grep -F -- "$ip" "$F2B_LOG" 2>/dev/null || true
+        if [[ "$ENABLE_OPENVPN_AS" == "1" && -r "$OVPN_LOG" ]]; then
+            echo
+            echo "OPENVPN ACCESS SERVER HISTORY"
+            grep -F -- "$ip" "$OVPN_LOG" 2>/dev/null || true
+        fi
+    } > "$report"
+    echo "Report created: $report"
+    echo "Review it for sensitive data before sharing."
+    pause
+}
+
+while true; do
+    header
+    echo " 1) Dashboard"
+    echo " 2) Active bans + remaining time"
+    echo " 3) Recent bans"
+    echo " 4) Recent unbans"
+    echo " 5) Top repeat offenders"
+    echo " 6) Recidive status"
+    echo " 7) Recidive candidates"
+    echo " 8) Investigate IP"
+    echo " 9) Ban IP"
+    echo "10) Unban IP"
+    echo "11) Trusted / ignored addresses"
+    echo "12) Live Fail2Ban log"
+    echo "13) Configuration health check"
+    echo "14) Export IP incident report"
+    echo " 0) Exit"
+    echo
+    read -r -p "Select: " choice
+
+    case "$choice" in
+        1) dashboard ;;
+        2) active_bans ;;
+        3) recent_events Ban ;;
+        4) recent_events Unban ;;
+        5) repeat_offenders ;;
+        6) recidive_status ;;
+        7) recidive_candidates ;;
+        8) investigate_ip ;;
+        9) change_ban banip ;;
+        10) change_ban unbanip ;;
+        11) trusted_networks ;;
+        12) header; echo "Press Ctrl+C to stop."; tail -f "$F2B_LOG" ;;
+        13) config_health ;;
+        14) export_report ;;
+        0) exit 0 ;;
+        *) echo "Invalid selection"; sleep 1 ;;
+    esac
+done

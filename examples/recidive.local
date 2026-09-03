@@ -1,0 +1,14 @@
+# Example only. Review every value before copying to /etc/fail2ban/jail.d/.
+# This jail is deliberately disabled by default.
+
+[recidive]
+enabled  = false
+logpath  = /var/log/fail2ban.log
+banaction = %(banaction_allports)s
+bantime  = 7d
+findtime = 1d
+maxretry = 5
+
+# Add only addresses and networks you explicitly trust. Do not copy private
+# infrastructure details into a public repository.
+# ignoreip = 127.0.0.1/8 ::1
