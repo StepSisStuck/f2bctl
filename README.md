@@ -1,5 +1,38 @@
 # f2bctl
 
+# Table of Content
+- [f2bctl](#f2bctl)
+- [Table of Content](#table-of-content)
+- [Introduction](#introduction)
+  - [Screenshots](#screenshots)
+  - [Features](#features)
+  - [Requirements](#requirements)
+  - [Before installation](#before-installation)
+  - [Installation](#installation)
+    - [1. Download the repository](#1-download-the-repository)
+    - [2. Review and test the downloaded script](#2-review-and-test-the-downloaded-script)
+    - [3. Choose how you want to run `f2bctl`](#3-choose-how-you-want-to-run-f2bctl)
+      - [Option A: Run directly from the repository (no installation)](#option-a-run-directly-from-the-repository-no-installation)
+      - [Option B: Install a system-wide `f2b` command](#option-b-install-a-system-wide-f2b-command)
+    - [4. Install the command](#4-install-the-command)
+    - [5. Verify the installation](#5-verify-the-installation)
+    - [6. Start the dashboard](#6-start-the-dashboard)
+  - [Configuration](#configuration)
+  - [Optional OpenVPN Access Server integration](#optional-openvpn-access-server-integration)
+  - [Recidive support](#recidive-support)
+  - [Updating](#updating)
+  - [Uninstalling](#uninstalling)
+  - [Troubleshooting](#troubleshooting)
+    - [`f2b: command not found`](#f2b-command-not-found)
+    - [`fail2ban-client` is missing](#fail2ban-client-is-missing)
+    - [Cannot connect to the Fail2Ban socket](#cannot-connect-to-the-fail2ban-socket)
+    - [Ban history or remaining time is unavailable](#ban-history-or-remaining-time-is-unavailable)
+    - [OpenVPN data is not displayed](#openvpn-data-is-not-displayed)
+    - [`/usr/bin/env: 'bash\r': No such file or directory`](#usrbinenv-bashr-no-such-file-or-directory)
+  - [Security and privacy](#security-and-privacy)
+  - [License](#license)
+
+# Introduction
 `f2bctl` is an interactive command-line dashboard for Fail2Ban. It collects common monitoring and administration tasks into one menu so you do not have to remember a long list of `fail2ban-client`, log-search, DNS, and WHOIS commands.
 
 It can display active jails, current bans, estimated remaining ban time, recent events, repeat offenders, recidive candidates, trusted addresses, and configuration health. It also provides confirmed manual ban/unban actions and can export an incident report for a selected IP address.
